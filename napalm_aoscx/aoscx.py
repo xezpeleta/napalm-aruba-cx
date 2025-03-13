@@ -49,7 +49,7 @@ import napalm.base.constants as c
 
 # Aruba AOS-CX lib
 import pyaoscx
-from pyaoscx import session, interface, system, common_ops, port, lldp, mac, vlan, vrf, arp
+from pyaoscx import Session, Interface, System, CommonOps, Port, Lldp, Mac, Vlan, Vrf, Arp
 
 class AOSCXDriver(NetworkDriver):
     """NAPALM driver for Aruba AOS-CX."""
@@ -65,7 +65,7 @@ class AOSCXDriver(NetworkDriver):
 
         self.platform = "aoscx"
         self.profile = [self.platform]
-        self.session_info = {}
+        self.session = None # Changed session_info to session object
         self.isAlive = False
         self.candidate_config = ''
 
@@ -76,10 +76,11 @@ class AOSCXDriver(NetworkDriver):
         Implementation of NAPALM method 'open' to open a connection to the device.
         """
         try:
-            self.session_info = dict(s=session.login(self.base_url, self.username,
-                                                             self.password), url=self.base_url)
+            # Using Session class directly and storing the object
+            self.session = Session(self.base_url, self.username, self.password)
+            self.session.login() # Explicit login call
             self.isAlive = True
-        except ConnectionError as error:
+        except pyaoscx.exceptions.ResponseError as error: # Using pyaoscx.exceptions.ResponseError for error handling
             # Raised if device not available or HTTPS REST is not enabled
             raise ConnectionException(str(error))
 
@@ -88,7 +89,8 @@ class AOSCXDriver(NetworkDriver):
         Implementation of NAPALM method 'close'. Closes the connection to the device and does
         the necessary cleanup.
         """
-        session.logout(**self.session_info)
+        if self.session:
+            self.session.logout() # Logout from the session object
         self.isAlive = False
 
     def is_alive(self):
@@ -113,8 +115,8 @@ class AOSCXDriver(NetworkDriver):
          * serial_number - Serial number of the device
          * interface_list - List of the interfaces of the device
         """
-        systeminfo = system.get_system_info(**self.session_info)
-        productinfo = system.get_product_info(**self.session_info)
+        systeminfo = System.get_system_info(self.session) # Passing session object
+        productinfo = System.get_product_info(self.session) # Passing session object
 
         uptime_seconds = (int(systeminfo['boot_time']))/1000
 
@@ -126,7 +128,7 @@ class AOSCXDriver(NetworkDriver):
             'model': productinfo['product_info']['product_name'],
             'hostname': systeminfo['hostname'],
             'fqdn':systeminfo['hostname'],
-            'interface_list': interface.get_all_interface_names(**self.session_info)
+            'interface_list': Interface.get_all_interface_names(self.session) # Passing session object
         }
         return fact_info
 
@@ -147,9 +149,9 @@ class AOSCXDriver(NetworkDriver):
          * mac_address (string)
         """
         interfaces_return = {}
-        interface_list = interface.get_all_interface_names(**self.session_info)
+        interface_list = Interface.get_all_interface_names(self.session) # Passing session object
         for line in interface_list:
-            interface_details = interface.get_interface(line, **self.session_info)
+            interface_details = Interface.get_interface(self.session, line) # Passing session object
             if 'description' not in interface_details:
                 interface_details['description'] = ""
             if 'max_speed' not in interface_details['hw_intf_info']:
@@ -202,9 +204,9 @@ class AOSCXDriver(NetworkDriver):
             * rx_broadcast_packets (int)
         """
         interface_stats_dictionary = {}
-        interface_list = interface.get_all_interface_names(**self.session_info)
+        interface_list = Interface.get_all_interface_names(self.session) # Passing session object
         for line in interface_list:
-            interface_details = interface.get_interface(line, **self.session_info)
+            interface_details = Interface.get_interface(self.session, line) # Passing session object
             print(interface_details['name'])
             interface_stats_dictionary.update(
                 {
@@ -242,13 +244,13 @@ class AOSCXDriver(NetworkDriver):
             * port
         """
         lldp_brief_return = {}
-        lldp_interfaces_list = lldp.get_all_lldp_neighbors(**self.session_info)
+        lldp_interfaces_list = Lldp.get_all_lldp_neighbors(self.session) # Passing session object
         for interface_uri in lldp_interfaces_list:
             interface_name = interface_uri[interface_uri.find('interfaces/') + 11:
                                            interface_uri.rfind('/lldp_neighbors')]
-            interface_name = common_ops._replace_percents(interface_name)
+            interface_name = CommonOps.replace_percents(interface_name) # Using CommonOps class
             interface_details = \
-                lldp.get_lldp_neighbor_info(interface_name, **self.session_info)
+                Lldp.get_lldp_neighbor_info(self.session, interface_name) # Passing session object
 
             if interface_name not in lldp_brief_return.keys():
                 lldp_brief_return[interface_name] = []
@@ -296,18 +298,18 @@ class AOSCXDriver(NetworkDriver):
         if interface:
             lldp_interfaces.append(interface)
         else:
-            lldp_interfaces_list = lldp.get_all_lldp_neighbors(**self.session_info)
+            lldp_interfaces_list = Lldp.get_all_lldp_neighbors(self.session) # Passing session object
             for interface_uri in lldp_interfaces_list:
                 interface_name = interface_uri[interface_uri.find('interfaces/') + 11:
                                                interface_uri.rfind('/lldp_neighbors')]
-                interface_name = common_ops._replace_percents(interface_name)
+                interface_name = CommonOps.replace_percents(interface_name) # Using CommonOps class
                 lldp_interfaces.append(interface_name)
 
         for single_interface in lldp_interfaces:
             if single_interface not in lldp_details_return.keys():
                 lldp_details_return[single_interface] = []
 
-            interface_details = lldp.get_lldp_neighbor_info(single_interface, **self.session_info)
+            interface_details = Lldp.get_lldp_neighbor_info(self.session, single_interface) # Passing session object
             remote_capabilities = ''.join(
                 [x.lower() for x in interface_details['neighbor_info']['chassis_capability_available']])
             remote_enabled = ''.join(
@@ -348,13 +350,13 @@ class AOSCXDriver(NetworkDriver):
                  * available_ram (int) - Total amount of RAM installed in the device (Not Supported)
                  * used_ram (int) - RAM in use in the device
         """
-        fan_details = self._get_fan_info(**self.session_info)
+        fan_details = self._get_fan_info(self.session) # Passing session object
         fan_dict = {}
         for fan in fan_details:
             new_dict = {fan['name']: fan['status'] == 'ok'}
             fan_dict.update(new_dict)
 
-        temp_details = self._get_temperature(**self.session_info)
+        temp_details = self._get_temperature(self.session) # Passing session object
         temp_dict = {}
         for sensor in temp_details:
             new_dict = {
@@ -366,7 +368,7 @@ class AOSCXDriver(NetworkDriver):
             }
             temp_dict.update(new_dict)
 
-        psu_details = self._get_power_supplies(**self.session_info)
+        psu_details = self._get_power_supplies(self.session) # Passing session object
         psu_dict = {}
         for psu in psu_details:
             new_dict = {
@@ -378,7 +380,7 @@ class AOSCXDriver(NetworkDriver):
             }
             psu_dict.update(new_dict)
 
-        resources_details = self._get_resource_utilization(**self.session_info)
+        resources_details = self._get_resource_utilization(self.session) # Passing session object
         cpu_dict = {}
         mem_dict = {}
         for mm in resources_details:
@@ -418,8 +420,8 @@ class AOSCXDriver(NetworkDriver):
             * age (float)
         """
         arp_entries = []
-        vrf_list = vrf.get_all_vrfs(**self.session_info)
-        vrf_list = list(map(lambda vrf: vrf[vrf.rfind('/')+1:] , vrf_list))
+        vrf_list = Vrf.get_all_vrfs(self.session) # Passing session object
+        vrf_list = list(map(lambda vrf_entry: vrf_entry.uri.split('/')[-1] , vrf_list)) # Accessing uri attribute in v2
         if len(vrf) > 0:
             if vrf in vrf_list:
                 vrf_list = [vrf]
@@ -427,13 +429,13 @@ class AOSCXDriver(NetworkDriver):
                 vrf_list_string = ", ".join(vrf_list)
                 raise Exception(f"ERROR: Not a valid VRF.\nPlease select from {vrf_list_string}.")
         for vrf_entry in vrf_list:
-            arp_list = arp.get_arp_entries(vrf_entry, **self.session_info)
+            arp_list = Arp.get_arp_entries(self.session, vrf_entry) # Passing session object
             for entry in arp_list:
                 arp_entries.append(
                     {
                         'interface': entry['Physical Port'],
                         'mac': entry['MAC Address'],
-                        'ip': entry['MAC Address'],
+                        'ip': entry['IP Address'], # Corrected key name to 'IP Address'
                         'age': 0.0
                     }
                 )
@@ -453,9 +455,9 @@ class AOSCXDriver(NetworkDriver):
             * prefix_length (int)
         """
         interface_ip_dictionary = {}
-        interface_list = interface.get_all_interface_names(**self.session_info)
+        interface_list = Interface.get_all_interface_names(self.session) # Passing session object
         for line in interface_list:
-            interface_info = port.get_port(line, **self.session_info)
+            interface_info = Port.get_port(self.session, line) # Passing session object
             try:
                 interface_ip_list = {}
                 ip4_address = {}
@@ -475,7 +477,7 @@ class AOSCXDriver(NetworkDriver):
                             ipv6_addresses[address[:address.rfind('/')]] = {
                                 'prefix_length': int(address[address.rfind('/') + 1:])
                             }
-                            
+
                 if (len(ip4_address) > 0):
                     interface_ip_list['ipv4'] = ip4_address
 
@@ -507,20 +509,20 @@ class AOSCXDriver(NetworkDriver):
             * last_move (float)
         """
         mac_entries = []
-        mac_list = mac.get_all_mac_addresses_on_system(**self.session_info)
+        mac_list = Mac.get_all_mac_addresses_on_system(self.session) # Passing session object
         for mac_uri in mac_list:
             full_uri = mac_uri[mac_uri.find('vlans/') + 6:]
-            mac = common_ops._replace_special_characters(full_uri[full_uri.rfind('/') + 1:])
+            mac_address = CommonOps.replace_special_characters(full_uri[full_uri.rfind('/') + 1:]) # Using CommonOps class and renamed mac to mac_address for clarity
             full_uri = full_uri[:full_uri.rfind('/')]
             mac_type = full_uri[full_uri.rfind('/') + 1:]
             full_uri = full_uri[:full_uri.rfind('/')]
-            vlan = int(full_uri[:full_uri.rfind('/')])
-            mac_info = mac.get_mac_info(vlan, mac_type, mac, **self.session_info)
+            vlan_id = int(full_uri[:full_uri.rfind('/')]) # Renamed vlan to vlan_id for clarity
+            mac_info = Mac.get_mac_info(self.session, vlan_id, mac_type, mac_address) # Passing session object and using vlan_id and mac_address
             mac_entries.append(
                 {
-                    'mac': mac,
+                    'mac': mac_address, # Using mac_address
                     'interface': mac_info['port'][mac_info['port'].rfind('/')+1:],
-                    'vlan': vlan,
+                    'vlan': vlan_id, # Using vlan_id
                     'static': (mac_type == 'static'),
                     'active': True,
                     'moves': None,
@@ -549,8 +551,8 @@ class AOSCXDriver(NetworkDriver):
             "location": ""
         }
 
-        systeminfo = system.get_system_info(**self.session_info)
-        productinfo = system.get_product_info(**self.session_info)
+        systeminfo = System.get_system_info(self.session) # Passing session object
+        productinfo = System.get_product_info(self.session) # Passing session object
 
         communities_dict = {}
         for community_name in systeminfo['snmp_communities']:
@@ -575,7 +577,7 @@ class AOSCXDriver(NetworkDriver):
         Note: Inner dictionaries do not have yet any available keys.
         :return: A dictionary with keys that are the NTP associations.
         """
-        return self._get_ntp_associations(**self.session_info)
+        return self._get_ntp_associations(self.session) # Passing session object
 
     def get_config(self, retrieve="all", full=False):
         """
@@ -599,9 +601,9 @@ class AOSCXDriver(NetworkDriver):
                 "candidate": ""
             }
             if retrieve in ["running", "all"]:
-                config_dict['running'] = self._get_json_configuration("running-config", **self.session_info)
+                config_dict['running'] = self._get_json_configuration("running-config", self.session) # Passing session object
             if retrieve in ["startup", "all"]:
-                config_dict['startup'] = self._get_json_configuration("startup-config", **self.session_info)
+                config_dict['startup'] = self._get_json_configuration("startup-config", self.session) # Passing session object
             if retrieve in ["candidate", "all"]:
                 config_dict['candidate'] = self.candidate_config
 
@@ -632,9 +634,9 @@ class AOSCXDriver(NetworkDriver):
                     * ip_address (str)
                     * rtt (float)
         """
-        ping_results = self._ping_destination(destination, is_ipv4=True, data_size=size, time_out=timeout,
+        ping_results = self._ping_destination(self.session, destination, is_ipv4=True, data_size=size, time_out=timeout, # Passing session object
                                               interval=2, reps=count, time_stamp=False, record_route=False,
-                                              vrf=vrf, **self.session_info)
+                                              vrf=vrf)
 
         full_results = ping_results['statistics']
         transmitted = 0
@@ -682,11 +684,12 @@ class AOSCXDriver(NetworkDriver):
 
         return output_dict
 
-    def _ping_destination(self, ping_target, is_ipv4=True, data_size=100, time_out=2, interval=2,
-                          reps=5, time_stamp=False, record_route=False, vrf="default", **kwargs):
+    def _ping_destination(self, session, ping_target, is_ipv4=True, data_size=100, time_out=2, interval=2, # Added session as first argument
+                          reps=5, time_stamp=False, record_route=False, vrf="default"):
         """
         Perform a Ping command to a specified destination
 
+        :param session: pyaoscx session object
         :param ping_target: Destination address as a string
         :param is_ipv4: Boolean True if the destination is an IPv4 address
         :param data_size: Integer for packet size in bytes
@@ -696,13 +699,10 @@ class AOSCXDriver(NetworkDriver):
         :param time_stamp: Boolean True if the time stamp should be included in the results
         :param record_route: Boolean True if the route taken should be recorded in the results
         :param vrf: String of the VRF name that the ping should be sent.  If using the Management VRF, set this to mgmt
-        :param kwargs:
-            keyword s: requests.session object with loaded cookie jar
-            keyword url: URL in main() function
         :return: Dictionary containing fan information
         """
 
-        target_url = kwargs["url"] + "ping?"
+        target_url = session.url + "ping?" # Accessing url from session object
         print(str(ping_target))
         if not ping_target:
             raise Exception("ERROR: No valid ping target set")
@@ -720,9 +720,9 @@ class AOSCXDriver(NetworkDriver):
             else:
                 target_url += 'mgmt=false'
 
-        response = kwargs["s"].get(target_url, verify=False)
+        response = session.s.get(target_url, verify=False) # Accessing session from session object
 
-        if not common_ops._response_ok(response, "GET"):
+        if not CommonOps.response_ok(response, "GET"): # Using CommonOps class
             logging.warning("FAIL: Ping failed with status code %d: %s"
                             % (response.status_code, response.text))
             ping_dict = {}
@@ -732,23 +732,21 @@ class AOSCXDriver(NetworkDriver):
 
         return ping_dict
 
-    def _get_fan_info(self, params={}, **kwargs):
+    def _get_fan_info(self, session, params={}): # Added session as first argument
         """
         Perform a GET call to get the fan information of the switch
         Note that this works for physical devices, not an OVA.
 
+        :param session: pyaoscx session object
         :param params: Dictionary of optional parameters for the GET request
-        :param kwargs:
-            keyword s: requests.session object with loaded cookie jar
-            keyword url: URL in main() function
         :return: Dictionary containing fan information
         """
 
-        target_url = kwargs["url"] + "system/subsystems/*/*/fans/*"
+        target_url = session.url + "system/subsystems/*/*/fans/*" # Accessing url from session object
 
-        response = kwargs["s"].get(target_url, params=params, verify=False)
+        response = session.s.get(target_url, params=params, verify=False) # Accessing session from session object
 
-        if not common_ops._response_ok(response, "GET"):
+        if not CommonOps.response_ok(response, "GET"): # Using CommonOps class
             logging.warning("FAIL: Getting dictionary of fan information failed with status code %d: %s"
                             % (response.status_code, response.text))
             fan_info_dict = {}
@@ -758,23 +756,21 @@ class AOSCXDriver(NetworkDriver):
 
         return fan_info_dict
 
-    def _get_temperature(self, params={}, **kwargs):
+    def _get_temperature(self, session, params={}): # Added session as first argument
         """
         Perform a GET call to get the temperature information of the switch
         Note that this works for physical devices, not an OVA.
 
+        :param session: pyaoscx session object
         :param params: Dictionary of optional parameters for the GET request
-        :param kwargs:
-            keyword s: requests.session object with loaded cookie jar
-            keyword url: URL in main() function
         :return: Dictionary containing temperature information
         """
 
-        target_url = kwargs["url"] + "system/subsystems/*/*/temp_sensors/*"
+        target_url = session.url + "system/subsystems/*/*/temp_sensors/*" # Accessing url from session object
 
-        response = kwargs["s"].get(target_url, params=params, verify=False)
+        response = session.s.get(target_url, params=params, verify=False) # Accessing session from session object
 
-        if not common_ops._response_ok(response, "GET"):
+        if not CommonOps.response_ok(response, "GET"): # Using CommonOps class
             logging.warning("FAIL: Getting dictionary of temperature information failed with status code %d: %s"
                             % (response.status_code, response.text))
             temp_info_dict = {}
@@ -784,23 +780,21 @@ class AOSCXDriver(NetworkDriver):
 
         return temp_info_dict
 
-    def _get_power_supplies(self, params={}, **kwargs):
+    def _get_power_supplies(self, session, params={}): # Added session as first argument
         """
         Perform a GET call to get the power supply information of the switch
         Note that this works for physical devices, not an OVA.
 
+        :param session: pyaoscx session object
         :param params: Dictionary of optional parameters for the GET request
-        :param kwargs:
-            keyword s: requests.session object with loaded cookie jar
-            keyword url: URL in main() function
         :return: Dictionary containing power supply information
         """
 
-        target_url = kwargs["url"] + "system/subsystems/*/*/power_supplies/*"
+        target_url = session.url + "system/subsystems/*/*/power_supplies/*" # Accessing url from session object
 
-        response = kwargs["s"].get(target_url, params=params, verify=False)
+        response = session.s.get(target_url, params=params, verify=False) # Accessing session from session object
 
-        if not common_ops._response_ok(response, "GET"):
+        if not CommonOps.response_ok(response, "GET"): # Using CommonOps class
             logging.warning("FAIL: Getting dictionary of PSU information failed with status code %d: %s"
                             % (response.status_code, response.text))
             temp_info_dict = {}
@@ -810,23 +804,21 @@ class AOSCXDriver(NetworkDriver):
 
         return temp_info_dict
 
-    def _get_resource_utilization(self, params={}, **kwargs):
+    def _get_resource_utilization(self, session, params={}): # Added session as first argument
         """
         Perform a GET call to get the cpu, memory, and open_fds of the switch
         Note that this works for physical devices, not an OVA.
 
+        :param session: pyaoscx session object
         :param params: Dictionary of optional parameters for the GET request
-        :param kwargs:
-            keyword s: requests.session object with loaded cookie jar
-            keyword url: URL in main() function
         :return: Dictionary containing resource utilization information
         """
 
-        target_url = kwargs["url"] + "system/subsystems/management_module/*"
+        target_url = session.url + "system/subsystems/management_module/*" # Accessing url from session object
 
-        response = kwargs["s"].get(target_url, params=params, verify=False)
+        response = session.s.get(target_url, params=params, verify=False) # Accessing session from session object
 
-        if not common_ops._response_ok(response, "GET"):
+        if not CommonOps.response_ok(response, "GET"): # Using CommonOps class
             logging.warning("FAIL: Getting dictionary of resource utilization info failed with status code %d: %s"
                             % (response.status_code, response.text))
             resources_dict = {}
@@ -836,53 +828,48 @@ class AOSCXDriver(NetworkDriver):
 
         return resources_dict
 
-    def _get_ntp_associations(self, params={}, **kwargs):
+    def _get_ntp_associations(self, session, params={}): # Added session as first argument
         """
         Perform a GET call to get the NTP associations across all VRFs
 
+        :param session: pyaoscx session object
         :param params: Dictionary of optional parameters for the GET request
-        :param kwargs:
-            keyword s: requests.session object with loaded cookie jar
-            keyword url: URL in main() function
         :return: Dictionary containing all of the NTP associations on the switch
         """
 
-        target_url = kwargs["url"] + "system/vrfs/*/ntp_associations"
+        target_url = session.url + "system/vrfs/*/ntp_associations" # Accessing url from session object
 
-        response = kwargs["s"].get(target_url, params=params, verify=False)
-
+        response = session.s.get(target_url, params=params, verify=False) # Accessing session from session object
+        response_json = response.json() if response.text else [] # Handle empty response
         associations_dict = {}
-        for server_uri in response:
-            server_name = server_uri[(server_uri.rfind('/') + 1):]  # Takes string after last '/'
+        for server_uri in response_json: # Iterate through json response
+            server_name = server_uri['path'].split('/')[-1]  # Takes string after last '/' using path attribute in v2
             associations_dict[server_name] = {}
 
-        if not common_ops._response_ok(response, "GET"):
+        if not CommonOps.response_ok(response, "GET"): # Using CommonOps class
             logging.warning("FAIL: Getting dictionary of resource utilization info failed with status code %d: %s"
                             % (response.status_code, response.text))
             associations_dict = {}
         else:
             logging.info("SUCCESS: Getting dictionary of resource utilization information succeeded")
-            associations_dict = response.json()
+
 
         return associations_dict
 
-    def _get_json_configuration(self, checkpoint="running-config", params={}, **kwargs):
+    def _get_json_configuration(self, checkpoint="running-config", session=None): # Added session as last argument
         """
         Perform a GET call to retrieve a configuration file based off of the checkpoint name
 
         :param checkpoint: String name of the checkpoint configuration
-        :param params: Dictionary of optional parameters for the GET request
-        :param kwargs:
-            keyword s: requests.session object with loaded cookie jar
-            keyword url: URL in main() function
+        :param session: pyaoscx session object
         :return: JSON format of the configuration
         """
 
-        target_url = kwargs["url"] + "fullconfigs/{}".format(checkpoint)
+        target_url = session.url + "fullconfigs/{}".format(checkpoint) # Accessing url from session object
 
-        response = kwargs["s"].get(target_url, params=params, verify=False)
+        response = session.s.get(target_url, verify=False) # Accessing session from session object
 
-        if not common_ops._response_ok(response, "GET"):
+        if not CommonOps.response_ok(response, "GET"): # Using CommonOps class
             logging.warning("FAIL: Getting configuration checkpoint named %s failed with status code %d: %s"
                             % (checkpoint, response.status_code, response.text))
             configuration_json = {}
@@ -892,10 +879,10 @@ class AOSCXDriver(NetworkDriver):
 
         return configuration_json
 
-def get_vlans(self):
+    def get_vlans(self):
         """
         Implementation of NAPALM method 'get_vlans'. This is used to retrieve all vlan
-        information. 
+        information.
 
         :return: Returns a dictionary of dictionaries. The keys for the first dictionary will be the
         vlan_id of the vlan. The inner dictionary will containing the following data for
@@ -903,10 +890,11 @@ def get_vlans(self):
          * name (text_type)
          * interfaces (list)
         """
-        ports_list = port.get_all_ports(**self.session_info)
+        ports_list = Port.get_all_ports(self.session) # Passing session object
         vlan_interface_data = defaultdict(list)
         for port_entry in ports_list:
-            port_data = port.get_port(port_entry.split('/')[-1], 2, **self.session_info)
+            port_name = port_entry.uri.split('/')[-1] # Accessing uri attribute in v2 and get port name
+            port_data = Port.get_port(self.session, port_name, depth=2) # Passing session object and depth parameter
             if '/' in port_data['name']:
                 if (len(port_data['applied_vlan_trunks']) > 0):
                     vlan_id = port_data['applied_vlan_trunks'][0]['id']
@@ -914,13 +902,13 @@ def get_vlans(self):
                 elif 'applied_vlan_tag' in port_data:
                     vlan_id = port_data['applied_vlan_tag']['id']
                     vlan_interface_data[vlan_id].append(port_data['name'])
-        vlans_list = vlan.get_all_vlans(**self.session_info)
+        vlans_list = Vlan.get_all_vlans(self.session) # Passing session object
         vlans_json = {}
         for vlan_entry in vlans_list:
-            vlan_id = int(vlan_entry.split('/')[-1])
-            vlan_data = vlan.get_vlan(vlan_id, selector="configuration",**self.session_info)
+            vlan_id = int(vlan_entry.uri.split('/')[-1]) # Accessing uri attribute in v2 and get vlan_id
+            vlan_data = Vlan.get_vlan(self.session, vlan_id, selector="configuration") # Passing session object
             if 'name' not in vlan_data:
-                vlan_data = vlan.get_vlan(vlan_id, selector="status",**self.session_info)
+                vlan_data = Vlan.get_vlan(self.session, vlan_id, selector="status") # Passing session object
             vlans_json[vlan_id] = {
                 "name": vlan_data['name'],
                 "interfaces": vlan_interface_data[vlan_id]
